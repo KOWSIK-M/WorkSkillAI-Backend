@@ -6,8 +6,11 @@ import com.cp.workskillai.models.*;
 import com.cp.workskillai.repository.ResumeRepository;
 import com.cp.workskillai.repository.StudentRepository;
 import com.cp.workskillai.repository.UserProfileRepository;
+import com.cp.workskillai.repository.UserSkillRepository;
 import com.cp.workskillai.service.GeminiAIService;
 import com.cp.workskillai.service.ProfileService;
+import com.cp.workskillai.service.UserSkillService;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,13 +24,13 @@ import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
-
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ProfileServiceImpl implements ProfileService {
 
     private final UserProfileRepository userProfileRepository;
+    private final UserSkillRepository userSkillRepository;
     private final ResumeRepository resumeRepository;
     private final StudentRepository studentRepository;
     private final GeminiAIService geminiAIService;
@@ -35,8 +38,13 @@ public class ProfileServiceImpl implements ProfileService {
     @Override
     public UserProfile getProfile(String userId) {
         log.info("Fetching profile for user: {}", userId);
-        return userProfileRepository.findByUserId(userId)
+        UserProfile profile = userProfileRepository.findByUserId(userId)
                 .orElseGet(() -> createDefaultProfile(userId));
+        
+        // Sync skills from profile to UserSkill model
+        syncSkillsFromProfile(userId, profile.getTechnicalSkills());
+        
+        return profile;
     }
 
     @Override
@@ -51,6 +59,10 @@ public class ProfileServiceImpl implements ProfileService {
         profile.setUpdatedAt(LocalDateTime.now().toString());
         
         UserProfile savedProfile = userProfileRepository.save(profile);
+        
+        // Sync skills to UserSkill model
+        syncSkillsFromProfile(userId, savedProfile.getTechnicalSkills());
+        
         log.info("Profile updated successfully for user: {}", userId);
         
         return savedProfile;
@@ -92,10 +104,192 @@ public class ProfileServiceImpl implements ProfileService {
                 .build();
         
         UserProfile savedProfile = userProfileRepository.save(profile);
+        
+        // Sync skills to UserSkill model
+        syncSkillsFromProfile(userId, savedProfile.getTechnicalSkills());
+        
         log.info("New profile created for user: {}", userId);
         
         return savedProfile;
     }
+
+    // ========== SKILL SYNC METHODS ==========
+
+    /**
+     * Sync technical skills from profile to UserSkill model
+     */
+    private void syncSkillsFromProfile(String userId, List<String> technicalSkills) {
+        if (technicalSkills == null || technicalSkills.isEmpty()) {
+            log.info("No technical skills to sync for user: {}", userId);
+            return;
+        }
+
+        try {
+            List<UserSkill> existingSkills = userSkillRepository.findByUserId(userId);
+            Map<String, UserSkill> existingSkillsMap = existingSkills.stream()
+                    .collect(Collectors.toMap(
+                            skill -> skill.getName().toLowerCase(),
+                            skill -> skill
+                    ));
+
+            List<UserSkill> skillsToSave = new ArrayList<>();
+            Set<String> processedSkills = new HashSet<>();
+
+            for (String skillName : technicalSkills) {
+                if (skillName == null || skillName.trim().isEmpty()) {
+                    continue;
+                }
+
+                String normalizedSkillName = skillName.trim();
+                String lowerCaseSkillName = normalizedSkillName.toLowerCase();
+
+                if (processedSkills.contains(lowerCaseSkillName)) {
+                    continue; // Skip duplicates
+                }
+
+                processedSkills.add(lowerCaseSkillName);
+
+                if (existingSkillsMap.containsKey(lowerCaseSkillName)) {
+                    // Skill exists, update if needed
+                    UserSkill existingSkill = existingSkillsMap.get(lowerCaseSkillName);
+                    boolean needsUpdate = updateExistingSkill(existingSkill, normalizedSkillName);
+                    if (needsUpdate) {
+                        skillsToSave.add(existingSkill);
+                    }
+                } else {
+                    // Create new skill
+                    UserSkill newSkill = createNewUserSkill(userId, normalizedSkillName);
+                    skillsToSave.add(newSkill);
+                }
+            }
+
+            // Save all skills
+            if (!skillsToSave.isEmpty()) {
+                userSkillRepository.saveAll(skillsToSave);
+                log.info("Synced {} skills for user: {}", skillsToSave.size(), userId);
+            }
+
+            // Handle skills that were removed from profile
+            handleRemovedSkills(userId, existingSkills, processedSkills);
+
+        } catch (Exception e) {
+            log.error("Error syncing skills for user: {}", userId, e);
+        }
+    }
+
+    /**
+     * Update existing skill if needed
+     */
+    private boolean updateExistingSkill(UserSkill existingSkill, String skillName) {
+        boolean needsUpdate = false;
+
+        // Update category if it's different or empty
+        String newCategory = determineCategory(skillName);
+        if (!newCategory.equals(existingSkill.getCategory())) {
+            existingSkill.setCategory(newCategory);
+            needsUpdate = true;
+        }
+
+        // Update timestamp
+        existingSkill.setUpdatedAt(LocalDateTime.now());
+
+        return needsUpdate;
+    }
+
+    /**
+     * Create new UserSkill from profile skill
+     */
+    private UserSkill createNewUserSkill(String userId, String skillName) {
+        String category = determineCategory(skillName);
+        
+        return UserSkill.builder()
+                .userId(userId)
+                .name(skillName)
+                .category(category)
+                .proficiency(0)
+                .score(0)
+                .status("pending")
+                .level("Pending")
+                .verified(false)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .experienceMonths(0)
+                .confidenceLevel("low")
+                .build();
+    }
+
+    /**
+     * Handle skills that were removed from profile
+     */
+    private void handleRemovedSkills(String userId, List<UserSkill> existingSkills, Set<String> currentSkillNames) {
+        List<UserSkill> skillsToRemove = existingSkills.stream()
+                .filter(skill -> !currentSkillNames.contains(skill.getName().toLowerCase()))
+                .collect(Collectors.toList());
+
+        if (!skillsToRemove.isEmpty()) {
+            // Instead of deleting, mark them as inactive or keep for history
+            // userSkillRepository.deleteAll(skillsToRemove);
+            log.info("Found {} skills removed from profile for user: {}", skillsToRemove.size(), userId);
+            // You can choose to delete or just log the removed skills
+        }
+    }
+
+    /**
+     * Enhanced skill categorization
+     */
+    private String determineCategory(String skillName) {
+        if (skillName == null) {
+            return "Other";
+        }
+
+        String lowerSkill = skillName.toLowerCase();
+
+        // Programming Languages
+        if (lowerSkill.matches(".*\\b(java|python|javascript|typescript|c\\+\\+|c#|go|rust|kotlin|swift|php|ruby|scala|r|matlab|perl|haskell|elixir|clojure|dart)\\b.*")) {
+            return "Programming";
+        }
+        // Frontend Technologies
+        else if (lowerSkill.matches(".*\\b(react|angular|vue|svelte|ember|backbone|jquery|html|css|sass|less|bootstrap|tailwind|webpack|vite|babel|redux|mobx|next\\.?js|nuxt\\.?js|gatsby)\\b.*")) {
+            return "Frontend";
+        }
+        // Backend Technologies
+        else if (lowerSkill.matches(".*\\b(node\\.?js|express|spring|django|flask|fastapi|laravel|ruby on rails|asp\\.net|nestjs|koa|hapi|micronaut|quarkus|graphql|rest api|microservices|serverless)\\b.*")) {
+            return "Backend";
+        }
+        // Database Technologies
+        else if (lowerSkill.matches(".*\\b(mysql|postgresql|mongodb|redis|elasticsearch|cassandra|oracle|sql server|sqlite|dynamodb|cosmosdb|firebase|realm|hbase|couchbase|neo4j|arangodb)\\b.*")) {
+            return "Database";
+        }
+        // Cloud Technologies
+        else if (lowerSkill.matches(".*\\b(aws|azure|gcp|google cloud|amazon web services|docker|kubernetes|terraform|ansible|jenkins|gitlab|github actions|circleci|travis ci|helm|istio|linkerd|openshift)\\b.*")) {
+            return "Cloud & DevOps";
+        }
+        // Mobile Development
+        else if (lowerSkill.matches(".*\\b(android|ios|react native|flutter|xamarin|ionic|cordova|phonegap|swiftui|jetpack compose|kotlin multiplatform)\\b.*")) {
+            return "Mobile";
+        }
+        // Data Science & AI/ML
+        else if (lowerSkill.matches(".*\\b(tensorflow|pytorch|keras|scikit-learn|pandas|numpy|matplotlib|seaborn|jupyter|tableau|power bi|apache spark|hadoop|kafka|airflow|mlflow|kubeflow|hugging face|openai)\\b.*")) {
+            return "Data Science & AI";
+        }
+        // Testing
+        else if (lowerSkill.matches(".*\\b(junit|testng|jest|mocha|chai|cypress|selenium|playwright|pytest|rspec|cucumber|jmeter|postman|soapui)\\b.*")) {
+            return "Testing";
+        }
+        // Tools & Methodologies
+        else if (lowerSkill.matches(".*\\b(git|svn|mercurial|jira|confluence|slack|teams|zoom|agile|scrum|kanban|waterfall|devops|ci/cd|tdd|bdd|domain driven design|clean architecture)\\b.*")) {
+            return "Tools & Methodologies";
+        }
+        // Soft Skills
+        else if (lowerSkill.matches(".*\\b(communication|leadership|teamwork|problem solving|critical thinking|adaptability|time management|creativity|collaboration|presentation|negotiation|conflict resolution|emotional intelligence)\\b.*")) {
+            return "Soft Skills";
+        }
+        else {
+            return "Other";
+        }
+    }
+
+    // ========== EXISTING METHODS (Keep all your existing methods) ==========
 
     @Override
     public ResumeAnalysisResponse uploadAndAnalyzeResume(String userId, MultipartFile file) {
@@ -124,6 +318,11 @@ public class ProfileServiceImpl implements ProfileService {
             
             // Set as active resume
             setActiveResume(savedResume.getId(), userId);
+            
+            // Sync skills from the analyzed resume
+            if (savedResume.getTechnicalSkills() != null && !savedResume.getTechnicalSkills().isEmpty()) {
+                syncSkillsFromProfile(userId, savedResume.getTechnicalSkills());
+            }
             
             log.info("Resume analysis completed successfully for user: {}", userId);
             
@@ -227,14 +426,19 @@ public class ProfileServiceImpl implements ProfileService {
             resumeRepository.save(resume);
             
             // Update user profile with new analysis
-            updateProfileFromResume(resume.getUserId(), resume);
+            UserProfile updatedProfile = updateProfileFromResume(resume.getUserId(), resume);
+            
+            // Sync skills from the re-analyzed resume
+            if (resume.getTechnicalSkills() != null && !resume.getTechnicalSkills().isEmpty()) {
+                syncSkillsFromProfile(resume.getUserId(), resume.getTechnicalSkills());
+            }
             
             return new ResumeAnalysisResponse(
                 true,
                 "Resume re-analyzed successfully",
                 analysisResult,
                 resume.getId(),
-                getProfile(resume.getUserId()).getId(),
+                updatedProfile.getId(),
                 resume.getConfidenceScore()
             );
             
@@ -291,6 +495,7 @@ public class ProfileServiceImpl implements ProfileService {
             throw new RuntimeException("File size must be less than 5MB");
         }
     }
+
 
     private void enforceResumeLimit(String userId) {
         long resumeCount = resumeRepository.countByUserId(userId);
@@ -526,5 +731,105 @@ public class ProfileServiceImpl implements ProfileService {
             @Override public InputStream getInputStream() throws IOException { return new ByteArrayInputStream(resume.getFileData()); }
             @Override public void transferTo(File dest) throws IOException, IllegalStateException { Files.write(dest.toPath(), resume.getFileData()); }
         };
+    }
+    
+    private final UserSkillService userSkillService;
+    
+    public UserProfile getUserProfile(String userId) {
+        Optional<UserProfile> profile = userProfileRepository.findByUserId(userId);
+        return profile.orElse(null);
+    }
+    
+    public Map<String, Object> getSkillGapData(String userId) {
+        Map<String, Object> skillGapData = new HashMap<>();
+        
+        try {
+            // Get user profile
+            UserProfile profile = getUserProfile(userId);
+            if (profile == null) {
+                throw new RuntimeException("User profile not found");
+            }
+            
+            // Get user skills
+            List<UserSkill> skills = userSkillService.getUserSkills(userId);
+            
+            // Prepare comprehensive data for ML analysis
+            skillGapData.put("profile", mapProfileData(profile));
+            skillGapData.put("skills", mapSkillsData(skills));
+            skillGapData.put("analytics", getSkillAnalytics(skills));
+            
+        } catch (Exception e) {
+            log.error("Error preparing skill gap data for user: {}", userId, e);
+            throw new RuntimeException("Failed to prepare skill gap data", e);
+        }
+        
+        return skillGapData;
+    }
+    
+    private Map<String, Object> mapProfileData(UserProfile profile) {
+        Map<String, Object> profileData = new HashMap<>();
+        profileData.put("userId", profile.getUserId());
+        profileData.put("fullName", profile.getFullName());
+        profileData.put("email", profile.getEmail());
+        profileData.put("contactNumber", profile.getContactNumber());
+        profileData.put("location", profile.getLocation());
+        profileData.put("title", profile.getTitle());
+        profileData.put("summary", profile.getSummary());
+        profileData.put("totalExperience", profile.getTotalExperience());
+        profileData.put("education", profile.getEducation());
+        profileData.put("experience", profile.getExperience());
+        profileData.put("certifications", profile.getCertifications());
+        profileData.put("technicalSkills", profile.getTechnicalSkills());
+        profileData.put("preferredRoles", profile.getPreferredRoles());
+        
+        return profileData;
+    }
+    
+    public List<Map<String, Object>> mapSkillsData(List<UserSkill> skills) {
+        return skills.stream().map(skill -> {
+            Map<String, Object> skillData = new HashMap<>();
+            skillData.put("name", skill.getName());
+            skillData.put("category", skill.getCategory());
+            skillData.put("proficiency", skill.getProficiency());
+            skillData.put("level", skill.getLevel());
+            skillData.put("score", skill.getScore());
+            skillData.put("status", skill.getStatus());
+            skillData.put("verified", skill.getVerified());
+            skillData.put("confidenceLevel", skill.getConfidenceLevel());
+            skillData.put("experienceMonths", skill.getExperienceMonths());
+            skillData.put("lastVerified", skill.getLastVerified());
+            return skillData;
+        }).toList();
+    }
+    
+    public Map<String, Object> getSkillAnalytics(List<UserSkill> skills) {
+        Map<String, Object> analytics = new HashMap<>();
+        
+        analytics.put("totalSkills", skills.size());
+        analytics.put("verifiedSkills", skills.stream().filter(UserSkill::getVerified).count());
+        analytics.put("averageProficiency", skills.stream()
+            .mapToInt(UserSkill::getProficiency)
+            .average()
+            .orElse(0.0));
+        
+        // Skill distribution by level
+        Map<String, Long> levelDistribution = new HashMap<>();
+        levelDistribution.put("expert", skills.stream().filter(s -> "Expert".equals(s.getLevel())).count());
+        levelDistribution.put("advanced", skills.stream().filter(s -> "Advanced".equals(s.getLevel())).count());
+        levelDistribution.put("intermediate", skills.stream().filter(s -> "Intermediate".equals(s.getLevel())).count());
+        levelDistribution.put("beginner", skills.stream().filter(s -> "Beginner".equals(s.getLevel())).count());
+        levelDistribution.put("pending", skills.stream().filter(s -> "Pending".equals(s.getLevel())).count());
+        
+        analytics.put("levelDistribution", levelDistribution);
+        
+        // Skill distribution by category
+        Map<String, Long> categoryDistribution = skills.stream()
+            .collect(HashMap::new, 
+                (map, skill) -> map.merge(skill.getCategory(), 1L, Long::sum),
+                HashMap::putAll);
+        
+        analytics.put("categoryDistribution", categoryDistribution);
+        
+        return analytics;
     }
 }

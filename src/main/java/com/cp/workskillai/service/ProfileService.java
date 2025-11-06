@@ -5,9 +5,12 @@ import com.cp.workskillai.dto.ResumeAnalysisResponse;
 import com.cp.workskillai.dto.ResumeUploadRequest;
 import com.cp.workskillai.models.ResumeDocument;
 import com.cp.workskillai.models.UserProfile;
+import com.cp.workskillai.models.UserSkill;
+
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Map;
 
 public interface ProfileService {
     
@@ -28,4 +31,8 @@ public interface ProfileService {
     
     // Analysis
     ResumeAnalysisResponse analyzeExistingResume(String resumeId);
+    
+    Map<String, Object> getSkillGapData(String userId);
+    Map<String, Object> getSkillAnalytics(List<UserSkill> skills);
+    List<Map<String, Object>> mapSkillsData(List<UserSkill> skills);
 }

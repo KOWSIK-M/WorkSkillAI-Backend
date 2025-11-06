@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.http.HttpStatus;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,28 +39,52 @@ public class DashboardController {
     }
 
     @GetMapping("/user/profile/{userId}")
-    public ResponseEntity<Map<String, Object>> getUserProfile(@PathVariable String userId) {
+    public ResponseEntity<Map<String, Object>> getUserProfile(@PathVariable String userId, 
+                                                            @RequestHeader(value = "Authorization", required = false) String authHeader) {
         try {
             log.info("Fetching user profile for: {}", userId);
+            log.info("Authorization header present: {}", authHeader != null);
+            
+            // Check if user exists in student collection first
+            Student student = studentService.getStudentById(userId);
+            if (student == null) {
+                log.warn("Student not found for ID: {}", userId);
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "User not found"));
+            }
             
             UserProfile profile = profileService.getProfile(userId);
-            Student student = studentService.getStudentById(userId);
+            
+            if (profile == null) {
+                log.warn("Profile not found for user: {}", userId);
+                Map<String, Object> response = new HashMap<>();
+                response.put("id", userId);
+                response.put("name", student.getFirstName() + " " + student.getLastName());
+                response.put("email", student.getEmail());
+                response.put("isProfileComplete", false);
+                response.put("student", student);
+                response.put("message", "Profile not found");
+                return ResponseEntity.ok(response);
+            }
             
             // Check if profile is complete based on your criteria
             boolean isProfileComplete = isProfileComplete(profile);
             
             Map<String, Object> response = new HashMap<>();
-            response.put("id", profile.getId());
+            response.put("id", profile.getId() != null ? profile.getId() : userId);
             response.put("name", profile.getFullName() != null ? profile.getFullName() : student.getFirstName() + " " + student.getLastName());
             response.put("email", profile.getEmail() != null ? profile.getEmail() : student.getEmail());
             response.put("isProfileComplete", isProfileComplete);
             response.put("profile", profile);
             response.put("student", student);
             
+            log.info("Successfully returned profile for user: {}", userId);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("Error fetching user profile for user: {}", userId, e);
-            return ResponseEntity.internalServerError().build();
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Internal server error");
+            errorResponse.put("message", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
         }
     }
 

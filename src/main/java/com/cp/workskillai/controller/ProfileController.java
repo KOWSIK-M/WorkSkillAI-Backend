@@ -12,12 +12,13 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @RestController
 @RequestMapping("/api/profile")
 @RequiredArgsConstructor
-@CrossOrigin(origins = {"http://localhost:3000", "http://localhost:5173"})
+@CrossOrigin(origins = {"http://localhost:3000", "http://localhost:5173","http://localhost:8000"})
 public class ProfileController {
 
     private final ProfileService profileService;
@@ -120,6 +121,18 @@ public class ProfileController {
             return ResponseEntity.badRequest().body(
                 new ResumeAnalysisResponse(false, e.getMessage(), null, null, null,null)
             );
+        }
+    }
+    
+ // New endpoint for comprehensive skill gap data
+    @GetMapping("/skill-gap-data/{userId}")
+    public ResponseEntity<Map<String, Object>> getSkillGapData(@PathVariable String userId) {
+        try {
+            Map<String, Object> skillGapData = profileService.getSkillGapData(userId);
+            return ResponseEntity.ok(skillGapData);
+        } catch (Exception e) {
+            log.error("Error fetching skill gap data for user: {}", userId, e);
+            return ResponseEntity.internalServerError().build();
         }
     }
 }
