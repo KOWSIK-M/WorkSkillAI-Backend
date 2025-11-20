@@ -16,10 +16,10 @@ FROM eclipse-temurin:21-jre
 WORKDIR /app
 
 # Copy built jar (wildcard to match the built artifact)
-COPY --from=build /app/target/*.jar app.jar
+COPY --from=build /app/target/*.war app.war
 
 # Expose the port you set in application.properties (server.port=2090)
 EXPOSE 2090
 
 # Use a non-root user? For simplicity we'll run default
-ENTRYPOINT ["java","-jar","/app/app.jar"]
+ENTRYPOINT ["java","-jar","/app/app.war"]
